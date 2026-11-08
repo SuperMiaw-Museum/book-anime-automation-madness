@@ -1,65 +1,72 @@
+
 name: Build book
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - '*'
-  workflow_dispatch:
+    branches: [main]
+    tags: ['*']
 
-permissions:
-  contents: read
+env:
+  BOOK_NAME: anime-automation-madness
+  BOOK_TITLE: Anime automation madness
+  BOOK_SUBTITLE: From a few scripts to a big system
+  BOOK_AUTHOR: SuperMiaw
+  BOOK_LICENSE: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+
     steps:
       - name: Check out book
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Prepare chapters and edition metadata
         shell: bash
         run: |
           mkdir -p build
-          chapters=(
-            01-the-early-days.md
-            02-the-cost-of-convenience.md
-            03-building-something-bigger.md
-            04-epilogue-the-madness-continues.md
-          )
+
+          shopt -s nullglob
+          chapters=( [0-9][0-9]-*.md )
+
+          if (( ${#chapters[@]} == 0 )); then
+            echo "❌ No chapters found" >&2
+            exit 1
+          fi
 
           : > build/book.md
           for chapter in "${chapters[@]}"; do
             if [[ -s build/book.md ]]; then
               printf '\n\\newpage\n\n' >> build/book.md
             fi
-            # Remove GitHub-only chapter navigation.
             sed '/\[↑ Contents\]/d' "$chapter" >> build/book.md
             printf '\n' >> build/book.md
           done
 
           published="$(date -u +%Y-%m-%d)"
           edition="Development"
+
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             edition="${GITHUB_REF#refs/tags/}"
-            printf '%s\n' "# Edition" "" "Title: Anime Automation Madness" "" "Author: SuperMiaw" "" "Version: $edition" "" "Published: $published" "" "License: Creative Commons Attribution 4.0 International (CC BY 4.0)" >> build/book.md
+            printf '%s\n' \
+              "# Edition" "" \
+              "Title: $BOOK_TITLE" "" \
+              "Author: $BOOK_AUTHOR" "" \
+              "Version: $edition" "" \
+              "Published: $published" "" \
+              "License: $BOOK_LICENSE" \
+              >> build/book.md
           fi
 
-          # Use the same footer for development builds and tagged editions.
-          # Redefine the plain page style too (used on chapter-opening pages).
           {
             printf '%s\n' '\usepackage{fancyhdr}'
             printf '%s\n' '\setlength{\footskip}{42pt}'
             printf '%s\n' '\setlength{\headheight}{14pt}'
             printf '%s\n' '\pagestyle{fancy}' '\fancyhf{}'
-            printf '%s\n' "\\newcommand{\\bookfooter}{\\parbox{\\textwidth}{\\centering\\scriptsize Anime Automation Madness -- SuperMiaw\\\\$edition -- $published -- CC BY 4.0 -- Page \\thepage}}"
+            printf '%s\n' "\\newcommand{\\bookfooter}{\\parbox{\\textwidth}{\\centering\\scriptsize $BOOK_TITLE -- $BOOK_AUTHOR\\\\$edition -- $published -- CC BY 4.0 -- Page \\thepage}}"
             printf '%s\n' '\fancyfoot[C]{\bookfooter}'
             printf '%s\n' '\renewcommand{\headrulewidth}{0pt}'
             printf '%s\n' '\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\bookfooter}\renewcommand{\headrulewidth}{0pt}}'
-            # Pandoc's LaTeX template calls \tableofcontents for the PDF.
             printf '%s\n' '\let\originaltableofcontents\tableofcontents'
             printf '%s\n' '\renewcommand{\tableofcontents}{\originaltableofcontents\clearpage}'
           } > build/footer.tex
@@ -68,40 +75,54 @@ jobs:
         shell: bash
         run: |
           common=(
-            --standalone --toc --toc-depth=2
-            --metadata title="Anime Automation Madness"
-            --metadata subtitle="From a few scripts to a big system"
-            --metadata author="SuperMiaw"
-            --metadata lang="en"
+            --standalone
+            --toc
+            --toc-depth=2
+            --metadata "title=$BOOK_TITLE"
+            --metadata "subtitle=$BOOK_SUBTITLE"
+            --metadata "author=$BOOK_AUTHOR"
+            --metadata lang=en
           )
 
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/data" -w /data pandoc/latex:latest \
             "${common[@]}" --split-level=1 \
-            -o build/anime-automation-madness.epub build/book.md
+            -o "build/${BOOK_NAME}.epub" build/book.md
 
-          pdf_args=(--include-in-header=build/footer.tex)
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/data" -w /data pandoc/latex:latest \
-            "${common[@]}" "${pdf_args[@]}" \
-            -o build/anime-automation-madness.pdf build/book.md
+            "${common[@]}" \
+            --include-in-header=build/footer.tex \
+            -o "build/${BOOK_NAME}.pdf" build/book.md
 
-      - name: Upload latest development build
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v6
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
         with:
-          name: anime-automation-madness-latest
+          name: book-build
           path: |
-            build/anime-automation-madness.epub
-            build/anime-automation-madness.pdf
+            build/${{ env.BOOK_NAME }}.epub
+            build/${{ env.BOOK_NAME }}.pdf
           retention-days: 7
           if-no-files-found: error
 
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: book-build
+          path: build
+
       - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
-            build/anime-automation-madness.epub
-            build/anime-automation-madness.pdf
+            build/${{ env.BOOK_NAME }}.epub
+            build/${{ env.BOOK_NAME }}.pdf
           fail_on_unmatched_files: true
